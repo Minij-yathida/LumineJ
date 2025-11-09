@@ -1,0 +1,532 @@
+  rules_version = '2';
+  service cloud.firestore {
+    match /databases/{database}/documents {
+
+      // ===========================
+      // 🔐 Helpers
+      // ===========================
+      function signedIn() {
+        return request.auth != null;
+      }
+
+      function isAdmin() {
+        return request.auth != null
+          && request.auth.token != null
+          && request.auth.token.admin == true;
+      }
+
+      function isAdminViaDoc() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      }
+
+      function isStoreOwner() {
+        return request.auth != null
+          && request.auth.token != null
+          && request.auth.token.storeOwner == true;
+      }
+
+      function isStoreOwnerViaDoc() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'storeOwner';
+      }
+
+      function isOwner(userId) {
+        return signedIn() && request.auth.uid == userId;
+      }
+
+      function uidInThread(threadId, uid) {
+        return uid != null
+          && exists(/databases/$(database)/documents/threads/$(threadId))
+          && (uid in get(/databases/$(database)/documents/threads/$(threadId)).data.participants);
+      }
+
+      function cannotEscalateToAdmin() {
+        return !(
+          request.resource.data.keys().hasAny(['role'])
+          && request.resource.data.role == 'admin'
+          && !(isAdmin() || isAdminViaDoc())
+        );
+      }
+
+      // 📞 Phone helpers
+      function hasPhoneKey(data) {
+        return data.keys().hasAny(['phoneKey'])
+          && (data.phoneKey is string)
+          && data.phoneKey.size() > 0;
+      }
+
+      function phoneReservedByUser_now(phoneKey, userId) {
+        return exists(/databases/$(database)/documents/phone_index/$(phoneKey))
+          && get(/databases/$(database)/documents/phone_index/$(phoneKey)).data.uid == userId;
+      }
+
+      function phoneReservedByUser_after(phoneKey, userId) {
+        return exists(/databases/$(database)/documents/phone_index/$(phoneKey))
+          && get(/databases/$(database)/documents/phone_index/$(phoneKey)).data.uid == userId;
+      }
+
+      // 🌐 URL Validators (ImgBB only)
+      function isImgBBUrl(url) {
+        return (url is string)
+          && url.matches('^https?://(i\\.ibb\\.co|ibb\\.co|imgbb\\.com)/.*$');
+      }
+
+      // ✅ optional ImgBB: ใช้กับ slipUrl / รูปที่อนุญาตให้เว้นได้
+      // - null / "" = ผ่าน
+      // - ต้องเป็น ImgBB URL เท่านั้นถ้ามีค่า
+      function isOptionalImgBBUrl(url) {
+        return (url == null)
+          || (url is string
+              && (url.size() == 0 || isImgBBUrl(url)));
+      }
+
+      // usedCount helper (สำหรับ coupons)
+      function getUsedCount(data) {
+        return (data.keys().hasAny(['usedCount'])
+            && (data.usedCount is int || data.usedCount is float))
+          ? data.usedCount
+          : 0;
+      }
+
+      // ===========================
+      // USERS
+      // ===========================
+      match /users/{userId} {
+        allow create: if (isOwner(userId) || isAdmin() || isAdminViaDoc())
+          && cannotEscalateToAdmin()
+          && (
+            !hasPhoneKey(request.resource.data)
+            || phoneReservedByUser_after(request.resource.data.phoneKey, userId)
+          );
+
+        allow read: if isOwner(userId) || isAdmin() || isAdminViaDoc();
+
+        allow update: if (isOwner(userId) || isAdmin() || isAdminViaDoc())
+          && cannotEscalateToAdmin()
+          && (
+            !request.resource.data.keys().hasAny(['phoneKey'])
+            || (
+              (resource.data.keys().hasAny(['phoneKey'])
+                && (
+                  (request.resource.data.phoneKey == resource.data.phoneKey
+                    && phoneReservedByUser_now(resource.data.phoneKey, userId))
+                  || (
+                    request.resource.data.phoneKey != resource.data.phoneKey
+                    && !exists(/databases/$(database)/documents/phone_index/$(resource.data.phoneKey))
+                    && phoneReservedByUser_after(request.resource.data.phoneKey, userId)
+                  )
+                )
+              )
+              || (!resource.data.keys().hasAny(['phoneKey'])
+                && phoneReservedByUser_after(request.resource.data.phoneKey, userId))
+            )
+          );
+
+        allow delete: if isAdmin() || isAdminViaDoc();
+
+        // ----- Subcollections -----
+        match /alerts/{alertId} {
+          allow read, create, update, delete:
+            if isOwner(userId) || isAdmin() || isAdminViaDoc();
+        }
+
+        match /notifications/{notifId} {
+          allow read, create, update, delete:
+            if isOwner(userId) || isAdmin() || isAdminViaDoc();
+        }
+
+        match /fcmTokens/{tokenId} {
+          allow read, create, update, delete:
+            if isOwner(userId) || isAdmin() || isAdminViaDoc();
+        }
+
+        match /order_requests/{requestId} {
+          allow create: if isOwner(userId) || isAdmin() || isAdminViaDoc();
+          allow read: if isOwner(userId) || isAdmin() || isAdminViaDoc();
+          allow update, delete: if isAdmin() || isAdminViaDoc();
+        }
+
+        match /claimedCoupons/{claimId} {
+          allow create: if (isOwner(userId) || isAdmin() || isAdminViaDoc())
+            && request.resource.data.keys().hasAny(['code'])
+            && (request.resource.data.code is string)
+            && !exists(
+              /databases/$(database)/documents/users/$(userId)/claimedCoupons/$(request.resource.data.code)
+            );
+
+          allow read: if isOwner(userId) || isAdmin() || isAdminViaDoc();
+
+          allow update: if (isOwner(userId) || isAdmin() || isAdminViaDoc())
+            && (
+              !request.resource.data.keys().hasAny(['code'])
+              || request.resource.data.code == resource.data.code
+            )
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'coupon',
+              'claimedAt',
+              'redeemedAt',
+              'usedInOrderId',
+              'code'
+            ])
+            && (
+              !request.resource.data.keys().hasAny(['claimedAt'])
+              || request.resource.data.claimedAt is timestamp
+            )
+            && (
+              !request.resource.data.keys().hasAny(['redeemedAt'])
+              || request.resource.data.redeemedAt is timestamp
+              || request.resource.data.redeemedAt == null
+            );
+
+          allow delete: if isAdmin() || isAdminViaDoc();
+        }
+      }
+
+      // ===========================
+      // PHONE INDEX
+      // ===========================
+      match /phone_index/{phoneKey} {
+        allow create: if signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && !exists(/databases/$(database)/documents/phone_index/$(phoneKey));
+        allow read: if isAdmin() || isAdminViaDoc();
+        allow update: if false;
+        allow delete: if (signedIn() && resource.data.uid == request.auth.uid)
+          || isAdmin() || isAdminViaDoc();
+      }
+
+      // ===========================
+      // ADMIN NOTIFICATIONS & ALERTS
+      // ===========================
+      match /admin_notifications/{notifId} {
+        allow create: if signedIn();
+        allow read, update, delete: if isAdmin() || isAdminViaDoc();
+      }
+
+      match /admin_alerts/{alertId} {
+        allow create: if signedIn();
+        allow read, update, delete: if isAdmin() || isAdminViaDoc();
+      }
+
+      // ===========================
+      // PRODUCTS
+      // ===========================
+      function isValidProduct(data) {
+        return data != null
+          && (!data.keys().hasAny(['name']) || (data.name is string))
+          && (!data.keys().hasAny(['category']) || (data.category is string))
+          && (!data.keys().hasAny(['basePrice']) || (data.basePrice is int || data.basePrice is float))
+          && (!data.keys().hasAny(['price']) || (data.price is int || data.price is float))
+          && (!data.keys().hasAny(['images']) || (data.images is list))
+          && (!data.keys().hasAny(['imageUrl']) || isImgBBUrl(data.imageUrl))
+          && (!data.keys().hasAny(['variants']) || (data.variants is list));
+      }
+
+      match /products/{id} {
+        allow read: if true;
+
+        allow create: if (isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc())
+          && isValidProduct(request.resource.data);
+
+        allow update: if
+          (
+            (isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc())
+            && isValidProduct(request.resource.data)
+          )
+          || (
+            signedIn()
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['stock', 'stock_map'])
+          );
+
+        allow delete: if isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
+      }
+
+          // ===========================
+      // COUPONS
+      // ===========================
+      function isValidCouponBase(data) {
+        return data != null
+          && (!data.keys().hasAny(['code']) || (data.code is string))
+          && (!data.keys().hasAny(['type']) || (data.type in [
+                'percent','fixed','shipping_full','shipping_fixed','shipping_percent'
+              ]))
+          && (!data.keys().hasAny(['value']) || (data.value is int || data.value is float))
+          && (!data.keys().hasAny(['active']) || (data.active is bool))
+          && (!data.keys().hasAny(['minSpend']) || (data.minSpend is int || data.minSpend is float))
+          && (!data.keys().hasAny(['maxDiscount']) || (data.maxDiscount is int || data.maxDiscount is float))
+          && (!data.keys().hasAny(['priority']) || (data.priority is int))
+          && (!data.keys().hasAny(['description']) || (data.description is string))
+          && (!data.keys().hasAny(['expiresAt']) || (data.expiresAt is timestamp))
+          && (!data.keys().hasAny(['usedCount']) || (data.usedCount is int || data.usedCount is float));
+      }
+
+      function isValidCouponCreate(data) {
+        return data.keys().hasAll(['code','type','value','active','createdAt'])
+          && (data.createdAt is timestamp)
+          && isValidCouponBase(data);
+      }
+
+      function isValidCouponUpdate(newData, oldData) {
+        // ตรวจฟิลด์หลังอัปเดต ว่าประเภทถูกต้อง
+        return isValidCouponBase(newData)
+          // ไม่ให้แก้ code เป็นค่าใหม่ (ถ้าจะส่งมาก็ต้องเท่าเดิม)
+          && (
+            !newData.keys().hasAny(['code'])
+            || newData.code == oldData.code
+          );
+      }
+
+      match /coupons/{couponId} {
+
+        // ลูกค้า / ใครก็อ่านได้ (ใช้ตอน checkout)
+        allow read, list: if true;
+
+        // สร้างคูปอง: admin / storeOwner เท่านั้น
+        allow create:
+          if (isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc())
+            && isValidCouponCreate(request.resource.data);
+
+        // ลบคูปอง: admin / storeOwner เท่านั้น
+        allow delete:
+          if isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
+
+        // แก้ไขคูปอง:
+        allow update:
+          // 1) admin / storeOwner แก้อะไรก็ได้ที่ type ถูก
+          if (
+            (isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc())
+            && isValidCouponUpdate(request.resource.data, resource.data)
+          )
+          // 2) user ทั่วไป อนุญาตเฉพาะ increment usedCount ตอนใช้คูปอง
+          || (
+            signedIn()
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['usedCount'])
+            && (request.resource.data.usedCount is int || request.resource.data.usedCount is float)
+            && request.resource.data.usedCount == getUsedCount(resource.data) + 1
+          );
+      }
+
+
+          // ===========================
+      // ORDERS
+      // ===========================
+      function isValidOrderOnCreate(data) {
+        return data != null
+          && (data.userId is string)
+          && (data.items is list) && data.items.size() > 0
+          && (!data.keys().hasAny(['payment']) || (
+              (data.payment is map)
+              && (!data.payment.keys().hasAny(['slipUrl']) || isOptionalImgBBUrl(data.payment.slipUrl))
+            ))
+          && (!data.keys().hasAny(['status']) || (data.status is string))
+          && (!data.keys().hasAny(['slipUrl']) || isOptionalImgBBUrl(data.slipUrl))
+          && (!data.keys().hasAny(['couponCode']) || (data.couponCode is string || data.couponCode == null))
+          && (!data.keys().hasAny(['customer']) || (data.customer is map))
+          && (!data.keys().hasAny(['shippingFee']) || (data.shippingFee is float || data.shippingFee is int))
+          && (!data.keys().hasAny(['source']) || (data.source is string));
+      }
+
+      // ✅ เพิ่มฟังก์ชันนี้ (ไม่มี { เกิน)
+      function isValidOrderUpdate(data) {
+        return (!data.keys().hasAny(['status']) || (data.status is string))
+          && (!data.keys().hasAny(['slipUrl']) || isOptionalImgBBUrl(data.slipUrl))
+          && (!data.keys().hasAny(['payment']) || (
+              (data.payment is map)
+              && (!data.payment.keys().hasAny(['slipUrl']) || isOptionalImgBBUrl(data.payment.slipUrl))
+            ))
+          && (!data.keys().hasAny(['couponCode']) || (data.couponCode is string || data.couponCode == null))
+          && (!data.keys().hasAny(['customer']) || (data.customer is map))
+          && (!data.keys().hasAny(['shippingFee']) || (data.shippingFee is float || data.shippingFee is int))
+          && (!data.keys().hasAny(['source']) || (data.source is string))
+          // ✅ เพิ่มสองบรรทัดนี้
+          && (!data.keys().hasAny(['cancelReason']) || (data.cancelReason is string))
+          && (!data.keys().hasAny(['cancelledAt']) || (data.cancelledAt is timestamp));
+      }
+
+
+      match /orders/{orderId} {
+        allow create: if signedIn()
+          && request.resource.data.userId == request.auth.uid
+          && isValidOrderOnCreate(request.resource.data);
+
+        allow read: if signedIn()
+          && (
+            resource.data.userId == request.auth.uid
+            || isAdmin() || isAdminViaDoc()
+            || isStoreOwner() || isStoreOwnerViaDoc()
+          );
+
+        allow update: if
+          (
+            // แอดมิน / storeOwner แก้ได้เต็ม
+            (isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc())
+            && isValidOrderUpdate(request.resource.data)
+          )
+          ||
+          (
+            // ลูกค้าเจ้าของออเดอร์ แก้ได้เฉพาะข้อมูลเหล่านี้ + status
+            signedIn()
+            && resource.data.userId == request.auth.uid
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'payment',
+              'slipUrl',
+              'couponCode',
+              'customer',
+              'shippingFee',
+              'source',
+              'status',    
+              'cancelReason',
+              'cancelledAt',
+            ])
+            && isValidOrderUpdate(request.resource.data)
+          );
+
+        allow delete: if isAdmin() || isAdminViaDoc();
+      }
+
+      // ===========================
+      // MACHINE USAGE / FEEDBACK / PAYMENTS / STATS
+      // ===========================
+      match /machineUsage/{usageId} {
+        allow create: if signedIn();
+        allow read: if isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
+        allow update, delete: if isAdmin() || isAdminViaDoc();
+      }
+
+      match /feedback/{fbId} {
+        allow create: if signedIn();
+        allow read: if isAdmin() || isAdminViaDoc();
+        allow update, delete: if isAdmin() || isAdminViaDoc();
+      }
+
+      match /payments/{payId} {
+        allow create: if signedIn();
+        allow read: if isOwner(request.auth.uid) || isAdmin() || isAdminViaDoc();
+        allow update, delete: if isAdmin() || isAdminViaDoc();
+      }
+
+      match /stats/{statId} {
+        allow read, write: if isAdmin() || isAdminViaDoc();
+      }
+
+      // CHAT
+      // ===========================
+      match /threads/{threadId} {
+
+        // อนุญาตให้ user ที่ล็อกอิน อ่าน & listen doc thread ใด ๆ ได้
+        // (ใช้สำหรับเปิดห้อง / เช็คมีอยู่ไหม; เนื้อหาจริงของแชทอยู่ใน messages ซึ่งยังล็อกด้วย participants)
+        allow get, list: if signedIn();
+
+        // ลูกค้าสร้าง thread ของตัวเองได้
+        allow create: if signedIn()
+          && (request.resource.data.participants is list)
+          && (request.auth.uid in request.resource.data.participants)
+          && request.resource.data.keys().hasAny(['participants'])
+          && (
+            !request.resource.data.keys().hasAny(['lastAt'])
+            || request.resource.data.lastAt is timestamp
+          )
+          && (
+            !request.resource.data.keys().hasAny(['updatedAt'])
+            || request.resource.data.updatedAt is timestamp
+          );
+
+        // อัปเดต:
+        // - admin / storeOwner ได้เต็ม
+        // - ผู้ใช้ใน thread แก้เฉพาะ field สรุป/unread/seen/typing ได้
+        allow update: if
+          (
+            isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc()
+          )
+          || (
+            signedIn()
+            && uidInThread(threadId, request.auth.uid)
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'lastMessage',
+              'lastSender',
+              'lastAt',
+              'updatedAt',
+              'unread_user',
+              'unread_store',
+              'unread',
+              'lastSeen_user',
+              'lastSeen_store',
+              'typing',
+              'peerMeta'
+            ])
+          );
+
+        allow delete: if isAdmin() || isAdminViaDoc();
+
+        // ---------- messages subcollection ----------
+        match /messages/{msgId} {
+
+          // อ่าน / list messages:
+          // - ต้องเป็นคนใน thread หรือ admin / storeOwner
+          allow list, read: if
+            (signedIn() && uidInThread(threadId, request.auth.uid))
+            || isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
+
+          // ส่งข้อความ:
+          // - ต้องเป็นคนใน thread + senderId == auth.uid
+          allow create: if (
+              signedIn()
+              && uidInThread(threadId, request.auth.uid)
+              && request.resource.data.senderId == request.auth.uid
+              && (
+                !request.resource.data.keys().hasAny(['createdAt'])
+                || request.resource.data.createdAt is timestamp
+              )
+              && isValidMessage(request.resource.data)
+            )
+            || isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
+
+          // อัปเดตสถานะอ่าน
+          allow update: if
+            isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc()
+            || (
+              signedIn()
+              && uidInThread(threadId, request.auth.uid)
+              && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','readAt'])
+              && request.resource.data.status == 'read'
+              && resource.data.senderId != request.auth.uid
+            );
+
+          allow delete: if isAdmin() || isAdminViaDoc();
+        }
+      }
+
+
+
+      // ===========================
+      // VALIDATION FUNCTIONS (CHAT)
+      // ===========================
+      function hasSeenList(data) {
+        return (!data.keys().hasAny(['readBy','seenBy']))
+          || (data.readBy is list)
+          || (data.seenBy is list);
+      }
+
+      function isValidMessage(data) {
+        return data != null
+          && (data.senderId is string)
+          && (data.type == 'text' || data.type == 'image')
+          && (!data.keys().hasAny(['system']) || (data.system is bool))
+          && hasSeenList(data)
+          && (
+            (data.type == 'text'
+              && (data.text is string)
+              && (!data.keys().hasAny(['imageUrl']) || data.imageUrl == null)
+            )
+            || (data.type == 'image'
+              && (data.imageUrl is string)
+              && isImgBBUrl(data.imageUrl)
+              && (!data.keys().hasAny(['text']) || data.text == null)
+            )
+          );
+      }
+    }
+  }

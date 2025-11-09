@@ -1,0 +1,95 @@
+# ===========================
+# 📦 PROJECT INFO
+# ===========================
+name: LumineJewelry
+description: A new Flutter project.
+publish_to: 'none'
+
+version: 1.0.0+2
+
+# ===========================
+# ⚙️ ENVIRONMENT CONFIG
+# ===========================
+environment:
+  sdk: ">=3.4.0 <4.0.0"      # ✅ ต้อง >=3.4 สำหรับ FlutterFire v3
+  flutter: ">=3.22.0"        # ✅ แนะนำใช้ Flutter 3.22+ (เสถียรกับ Firebase ชุดนี้)
+
+# ===========================
+# 📚 DEPENDENCIES (ใช้งานจริงในแอป)
+# ===========================
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ✅ State / Utilities
+  provider: ^6.1.2
+  shared_preferences: ^2.2.3
+  uuid: ^4.5.1
+  url_launcher: ^6.3.2
+  cached_network_image: ^3.3.1 
+  flutter_slidable: ^3.1.0
+
+  # ✅ เพิ่ม flutter_launcher_icons ไว้ตรงนี้ก็ได้ (จะใช้ตอน dev)
+  flutter_launcher_icons: ^0.13.1
+
+  # ✅ i18n & Localizations
+  flutter_localizations:
+    sdk: flutter
+  timezone: ^0.9.4
+  qr_flutter: ^4.1.0
+  http: ^1.2.2 
+
+  # ✅ การแปลงเลข/วันที่
+  intl: ^0.20.2
+
+  # ✅ Firebase (ชุดที่เข้ากันได้)
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.4.4
+  firebase_storage: ^12.3.0
+  cloud_functions: ^5.0.3
+  firebase_messaging: ^15.0.4
+  firebase_app_check: ^0.3.2+10
+
+  # ✅ การแจ้งเตือนภายในเครื่อง
+  flutter_local_notifications: ^17.2.2
+
+  # ✅ Media
+  image_picker: ^1.2.0
+
+  # ✅ Icons & Fonts
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.3.2
+
+# ===========================
+# 🧰 DEV DEPENDENCIES (ใช้ตอนพัฒนา)
+# ===========================
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+# ===========================
+# 🎨 FLUTTER ASSETS / FONTS
+# ===========================
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/fonts/
+
+  fonts:
+    - family: PlayfairDisplay
+      fonts:
+        - asset: assets/fonts/PlayfairDisplay-VariableFont_wght.ttf
+
+# ===========================
+# 🖼️ APP ICON CONFIG
+# (ใช้กับ flutter_launcher_icons)
+# ===========================
+flutter_launcher_icons:
+  android: true               # ✅ สร้างไอคอนสำหรับ Android
+  ios: true                   # ✅ สร้างไอคอนสำหรับ iOS
+  image_path: "assets/images/icon.png"  # ✅ path รูปไอคอนของคุณ (ใส่เอง)
+  remove_alpha_ios: true      # ✅ เอา transparency ออกกันปัญหาไอคอนโปร่งใสบน iOS

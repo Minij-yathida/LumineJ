@@ -1,0 +1,29 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for Firebase",
+  "type": "module",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "scripts": {
+    "predeploy": "echo 'Predeploy Hook skipped.'",
+    "serve": "firebase emulators:start --only functions",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log",
+    "lint": "echo \"no lint\""
+  },
+  "dependencies": {
+    "@sendgrid/mail": "^8.1.6",
+    "dotenv": "^16.6.1",
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.6.0",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "firebase-functions-test": "^3.1.0"
+  },
+  "private": true
+}

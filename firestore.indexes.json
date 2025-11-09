@@ -1,0 +1,23 @@
+{
+  "indexes": [
+    {
+      "collectionId": "coupons",
+      "fields": [
+        { "fieldPath": "active", "order": "ASCENDING" },
+        { "fieldPath": "priority", "order": "DESCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    }
+    ,
+    {
+      "collectionId": "claimedCoupons",
+      "fields": [
+        { "fieldPath": "redeemedAt", "order": "ASCENDING" },
+        { "fieldPath": "claimedAt", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
