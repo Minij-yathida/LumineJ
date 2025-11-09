@@ -25,7 +25,6 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
 
   bool _busy = false;
   String? _localPickedPath; // local preview
-  String? _prefetchedUrl; // remember last prefetched URL to avoid repeated precache
 
   // ---------------- Name & Address ----------------
 
@@ -62,7 +61,6 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
       await _fs.collection('users').doc(u.uid).update({
         'displayName': c.text.trim(),
       });
-      setState(() {});
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -101,13 +99,12 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
       await _fs.collection('users').doc(u.uid).update({
         'address': c.text.trim(),
       });
-      setState(() {});
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  // ---------------- Avatar (ปรับให้เร็วขึ้น) ----------------
+  // ---------------- Avatar (อัปโหลด + ให้โหลดไวขึ้น) ----------------
 
   Future<void> _changePhotoUrl(String? current) async {
     final u = _auth.currentUser;
@@ -119,7 +116,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     try {
       picked = await picker.pickImage(
         source: ImageSource.gallery,
-        imageQuality: 65, // ลดขนาดไฟล์ลง (60-70 แนะนำ)
+        imageQuality: 65, // ลดขนาดไฟล์ลง
         maxWidth: 800,
         maxHeight: 800,
       );
@@ -134,8 +131,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
     if (picked == null) return;
 
     setState(() {
-      // แสดงรูป local ให้ user เห็นทันที ไม่ต้องรออัปโหลด
-      _localPickedPath = picked!.path;
+      _localPickedPath = picked!.path; // แสดง preview ก่อน
       _busy = true;
     });
 
@@ -150,13 +146,9 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
 
       final uri = Uri.parse('https://api.imgbb.com/1/upload?key=$imgbbKey');
 
-      // ✅ ใช้ MultipartRequest แทน base64 -> payload เล็กลง/เร็วขึ้น
       final request = http.MultipartRequest('POST', uri)
         ..files.add(
-          await http.MultipartFile.fromPath(
-            'image',
-            picked.path,
-          ),
+          await http.MultipartFile.fromPath('image', picked.path),
         );
 
       final streamed = await request.send();
@@ -167,7 +159,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
         if (data['success'] == true) {
           final imageData = data['data'] as Map<String, dynamic>;
 
-          // ✅ ใช้ thumb.url ถ้ามี (ไฟล์เล็ก โหลดเร็ว เหมาะกับ avatar 100x100)
+          // ถ้ามี thumb ให้ใช้ (ไฟล์เล็ก โหลดไว) ถ้าไม่มีก็ใช้ url ปกติ
           final thumb = (imageData['thumb'] ?? {}) as Map<String, dynamic>;
           final url =
               (thumb['url'] as String?) ?? (imageData['url'] as String);
@@ -176,14 +168,11 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
             'profilePhotoUrl': url,
           });
 
-          if (mounted) {
-            setState(() {
-              _busy = false;
-              // เคลียร์ local preview เพื่อให้ไปใช้รูปจากเน็ต (CachedNetworkImage)
-              _localPickedPath = null;
-              _prefetchedUrl = null;
-            });
-          }
+          if (!mounted) return;
+          setState(() {
+            _busy = false;
+            _localPickedPath = null; // ให้ใช้รูปจาก network แทน
+          });
           return;
         }
 
@@ -200,6 +189,8 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
       );
       setState(() {
         _busy = false;
+        // ถ้า fail ให้คงรูปเดิมไว้
+        _localPickedPath = null;
       });
     }
   }
@@ -293,7 +284,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
             return SingleChildScrollView(
               child: Column(
                 children: [
-                  // ---------- Profile Header (ต่อจาก Member bar ข้างบน) ----------
+                  // ---------- Profile Header ----------
                   Container(
                     height: 210,
                     decoration: BoxDecoration(
@@ -322,7 +313,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                               child: ClipOval(
                                 child: Builder(
                                   builder: (ctx) {
-                                    // 1) ถ้ามี local preview ให้โชว์ทันที
+                                    // 1) local preview ทันทีหลังเลือก
                                     if (_localPickedPath != null) {
                                       return Image.file(
                                         File(_localPickedPath!),
@@ -332,23 +323,26 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                                       );
                                     }
 
-                                    // 2) ถ้ามีรูปจากเน็ต ใช้ CachedNetworkImage + precache
+                                    // 2) รูปจากเน็ต: ใช้ CachedNetworkImage + จำกัดขนาด cache ให้เล็กลง
                                     if (photoUrl.isNotEmpty) {
-                                      if (_prefetchedUrl != photoUrl) {
-                                        try {
-                                          precacheImage(
-                                            CachedNetworkImageProvider(photoUrl),
-                                            ctx,
-                                          );
-                                        } catch (_) {}
-                                        _prefetchedUrl = photoUrl;
-                                      }
-
                                       return CachedNetworkImage(
                                         imageUrl: photoUrl,
-                                        width: 100,
-                                        height: 100,
-                                        fit: BoxFit.cover,
+                                        // จำกัด size ใน cache ให้เหมาะกับ avatar
+                                        memCacheWidth: 200,
+                                        memCacheHeight: 200,
+                                        maxWidthDiskCache: 200,
+                                        maxHeightDiskCache: 200,
+                                        imageBuilder: (context, imageProvider) {
+                                          return Container(
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              image: DecorationImage(
+                                                image: imageProvider,
+                                                fit: BoxFit.cover,
+                                              ),
+                                            ),
+                                          );
+                                        },
                                         placeholder: (_, __) => Container(
                                           color: Colors.white,
                                           child: const Center(
@@ -372,7 +366,7 @@ class _UnifiedProfilePageState extends State<UnifiedProfilePage> {
                                       );
                                     }
 
-                                    // 3) ไม่มีรูป -> แสดง icon
+                                    // 3) ไม่มีรูป -> icon
                                     return Container(
                                       color: Colors.white,
                                       child: Icon(

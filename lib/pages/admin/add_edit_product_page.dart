@@ -41,73 +41,80 @@ class _AddEditProductPageState extends State<AddEditProductPage>
   bool _uploading = false;
   late final TabController _tab;
 
-  @override
-  void initState() {
-    super.initState();
-    _tab = TabController(length: 3, vsync: this);
+      @override
+    void initState() {
+      super.initState();
+      _tab = TabController(length: 3, vsync: this);
 
-    final d = widget.initial;
-    if (d != null) {
-      // --------- main fields ----------
-      _name.text = (d['name'] ?? '').toString();
-      _desc.text = (d['description'] ?? '').toString();
+      final d = widget.initial;
+      if (d != null) {
+        // (เหมือนเดิมทุกอย่าง)
+        _name.text = (d['name'] ?? '').toString();
+        _desc.text = (d['description'] ?? '').toString();
 
-      final p = d['basePrice'] ?? d['price'] ?? 0;
-      if (p is num) {
-        _price.text = p.toStringAsFixed(p % 1 == 0 ? 0 : 2);
-      } else {
-        _price.text = p.toString();
-      }
+        final p = d['basePrice'] ?? d['price'] ?? 0;
+        if (p is num) {
+          _price.text = p.toStringAsFixed(p % 1 == 0 ? 0 : 2);
+        } else {
+          _price.text = p.toString();
+        }
 
-      _active = d['active'] == true;
+        _active = d['active'] == true;
+        _categorySlug = d['category']?.toString();
+        _categoryName = d['categoryName']?.toString();
 
-      _categorySlug = d['category']?.toString();
-      _categoryName = d['categoryName']?.toString();
+        final imgs = d['images'];
+        if (imgs is List) {
+          _images.addAll(imgs.whereType<String>());
+        } else if (imgs is String && imgs.isNotEmpty) {
+          _images.add(imgs);
+        }
 
-      // --------- images ----------
-      final imgs = d['images'];
-      if (imgs is List) {
-        _images.addAll(imgs.whereType<String>());
-      } else if (imgs is String && imgs.isNotEmpty) {
-        _images.add(imgs);
-      }
+        final vars = d['variants'];
+        if (vars is List) {
+          for (final v in vars) {
+            if (v is Map) {
+              final mv = Map<String, dynamic>.from(v);
+              final size = (mv['size'] ?? '').toString();
+              final stock = (mv['stock'] is num)
+                  ? (mv['stock'] as num).toInt()
+                  : int.tryParse('${mv['stock'] ?? 0}') ?? 0;
+              if (size.isEmpty && stock <= 0) continue;
 
-      // --------- variants (size only) ----------
-      final vars = d['variants'];
-      if (vars is List) {
-        for (final v in vars) {
-          if (v is Map) {
-            final mv = Map<String, dynamic>.from(v);
-            final size = (mv['size'] ?? '').toString();
-            final stock = (mv['stock'] is num)
-                ? (mv['stock'] as num).toInt()
-                : int.tryParse('${mv['stock'] ?? 0}') ?? 0;
-            if (size.isEmpty && stock <= 0) continue;
+              _variants.add({
+                'id': mv['id'] ?? const Uuid().v4(),
+                'size': size,
+                'size_id': (mv['size_id'] ?? '').toString(),
+                'stock': stock,
+              });
+            }
+          }
+        }
 
+        if (_variants.isEmpty) {
+          final topStock = (d['stock'] is num) ? (d['stock'] as num).toInt() : 0;
+          if (topStock > 0) {
             _variants.add({
-              'id': mv['id'] ?? const Uuid().v4(),
-              'size': size,
-              'size_id': (mv['size_id'] ?? '').toString(),
-              'stock': stock,
+              'id': const Uuid().v4(),
+              'size': 'Freesize',
+              'size_id': 'freesize',
+              'stock': topStock,
             });
           }
         }
       }
 
-      // ถ้าไม่มี variants แต่มี stock เดี่ยว → แปลงให้เป็น 1 variant "Freesize"
-      if (_variants.isEmpty) {
-        final topStock = (d['stock'] is num) ? (d['stock'] as num).toInt() : 0;
-        if (topStock > 0) {
-          _variants.add({
-            'id': const Uuid().v4(),
-            'size': 'Freesize',
-            'size_id': 'freesize',
-            'stock': topStock,
-          });
+      // ✅ prefetch thumbnail ให้โหลดไวขึ้นตอนโชว์
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        for (final url in _images.take(6)) {
+          precacheImage(
+            CachedNetworkImageProvider(url),
+            context,
+          );
         }
-      }
+      });
     }
-  }
+
 
   @override
   void dispose() {
@@ -162,17 +169,37 @@ class _AddEditProductPageState extends State<AddEditProductPage>
 
 
   Future<void> _pickImages() async {
-    final picker = ImagePicker();
-    final files =
-        await picker.pickMultiImage(imageQuality: 85);
-    if (files.isEmpty) return;
-    for (final f in files.take(6 - _images.length)) {
-      final url = await _uploadToImgBB(f);
-      if (url != null) {
-        setState(() => _images.add(url));
-      }
+  if (_uploading) return;
+
+  final picker = ImagePicker();
+  final files = await picker.pickMultiImage(
+    imageQuality: 70,   // ลดคุณภาพลงนิดหน่อยให้ไฟล์เล็กลง
+    maxWidth: 1080,
+    maxHeight: 1080,
+  );
+
+  if (files.isEmpty) return;
+
+  final remain = 6 - _images.length;
+  if (remain <= 0) return;
+
+  setState(() => _uploading = true);
+
+  try {
+    // ✅ อัปโหลดแบบ parallel
+    final futures = files.take(remain).map(_uploadToImgBB).toList();
+    final urls = await Future.wait(futures);
+
+    setState(() {
+      _images.addAll(urls.whereType<String>());
+    });
+  } finally {
+    if (mounted) {
+      setState(() => _uploading = false);
     }
   }
+}
+
 
      // ---------- category bottom sheet ----------
   Future<void> _openCategorySheet() async {
@@ -665,66 +692,48 @@ class _AddEditProductPageState extends State<AddEditProductPage>
               minHeight: 3),
         const SizedBox(height: 8),
         GridView.builder(
-          shrinkWrap: true,
-          physics:
-              const NeverScrollableScrollPhysics(),
-          gridDelegate:
-              const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount:
-                3,
-            mainAxisSpacing:
-                8,
-            crossAxisSpacing:
-                8,
-          ),
-          itemCount:
-              _images.length,
-          itemBuilder: (_, i) =>
-              Stack(
-            children: [
-              Positioned.fill(
-                child:
-                    ClipRRect(
-                  borderRadius:
-                      BorderRadius.circular(
-                          10),
-                  child:
-                      CachedNetworkImage(
-                        imageUrl: _images[i],
-                        fit: BoxFit.cover,
-                        memCacheWidth: 600,
-                        memCacheHeight: 600,
-                    placeholder:(_, __) => Container(
-                      color: const Color(0xFFF5ECE8),
-                    ),
-                    errorWidget: (_, __, ___) =>Container(
-                      color: const Color.fromARGB(255, 48, 24, 13),
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+            ),
+            itemCount: _images.length,
+            itemBuilder: (_, i) => Stack(
+              children: [
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: CachedNetworkImage(
+                      imageUrl: _images[i],
+                      fit: BoxFit.cover,
+                      memCacheWidth: 600,
+                      memCacheHeight: 600,
+                      placeholder: (_, __) => Container(
+                        color: const Color(0xFFF5ECE8),
+                      ),
+                      errorWidget: (_, __, ___) => Container(
+                        color: const Color.fromARGB(255, 48, 24, 13),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              Positioned(
-                right: 4,
-                top: 4,
-                child:InkWell(
-                  onTap: () =>
-                      setState(() =>
-                          _images.removeAt(i)),
-                  child:
-                  Container(
-                    padding:const EdgeInsets.all(3),
-                    decoration:const BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    child:
-                        const Icon(
-                      Icons
-                          .close,
-                      size:
-                          16,
-                      color: Colors
-                          .white,
+                Positioned(
+                  right: 4,
+                  top: 4,
+                  child: InkWell(
+                    onTap: () => setState(() => _images.removeAt(i)),
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: const BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.close,
+                        size: 16,
+                        color: Colors.white,
                     ),
                   ),
                 ),

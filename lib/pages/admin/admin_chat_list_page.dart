@@ -1,9 +1,9 @@
 // lib/pages/admin/admin_chat_list_page.dart
 // หน้านี้สำหรับ "แอดมิน / ร้าน" ใช้ดูแชทของลูกค้าทั้งหมด
 
+import 'package:LumineJewelry/chat/chat_page.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:LumineJewelry/chat/chat_page.dart';
 
 import '../../core/app_colors.dart';
 import '../../services/chat_service.dart';
@@ -19,7 +19,7 @@ class _AdminChatListPageState extends State<AdminChatListPage> {
   @override
   Widget build(BuildContext context) {
     // ✅ ดึงทุก thread ของร้านนี้ ตาม storeId ที่กำหนดใน ChatService
-    final query = FirebaseFirestore.instance
+    final q = FirebaseFirestore.instance
         .collection('threads')
         .where('storeId', isEqualTo: ChatService.storeId)
         .orderBy('lastAt', descending: true);
@@ -41,8 +41,8 @@ class _AdminChatListPageState extends State<AdminChatListPage> {
         ),
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: query.snapshots(),
-        builder: (context, snap) {
+        stream: q.snapshots(),
+        builder: (_, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -55,12 +55,11 @@ class _AdminChatListPageState extends State<AdminChatListPage> {
 
           final rawDocs = snap.data!.docs;
 
-          // กรอง thread ที่ไม่มีข้อความจริง หรือมีแต่ welcome ออก
+          // 🔹 กรอง thread ที่เป็น welcome/placeholder หรือ lastMessage ว่างออก
           final docs = rawDocs.where((doc) {
             final d = doc.data();
             final lm = (d['lastMessage'] ?? '').toString().trim();
             if (lm.isEmpty) return false;
-
             final low = lm.toLowerCase();
             if (low.contains('ยินดีต้อนรับ') || low.contains('welcome')) {
               return false;
@@ -99,8 +98,9 @@ class _AdminChatListPageState extends State<AdminChatListPage> {
                 leading: CircleAvatar(
                   backgroundImage:
                       photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                  child:
-                      photoUrl.isEmpty ? const Icon(Icons.person) : null,
+                  child: photoUrl.isEmpty
+                      ? const Icon(Icons.person)
+                      : null,
                 ),
                 title: Text(
                   titleText,
@@ -142,7 +142,7 @@ class _AdminChatListPageState extends State<AdminChatListPage> {
                     MaterialPageRoute(
                       builder: (_) => ChatPage(
                         threadId: threadId,
-                        asStore: true, // ✅ โหมดร้าน
+                        asStore: true, // ✅ ฝั่งแอดมิน
                       ),
                     ),
                   );

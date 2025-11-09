@@ -1,4 +1,3 @@
-// lib/pages/customer/notifications_page.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -6,7 +5,9 @@ import 'package:intl/intl.dart';
 import '../../services/notifications_watcher.dart';
 
 class NotificationsPage extends StatefulWidget {
-  const NotificationsPage({super.key});
+  final bool isAdmin; // ถ้า true = ใช้ notifications_admin
+
+  const NotificationsPage({super.key, this.isAdmin = false});
 
   @override
   State<NotificationsPage> createState() => _NotificationsPageState();
@@ -32,25 +33,27 @@ class _NotificationsPageState extends State<NotificationsPage>
       curve: Curves.easeInOut,
     );
 
-    // ใช้ NotificationWatcher สำหรับฝั่งลูกค้า
-    _unreadListener = () {
-      final cnt = NotificationWatcher.unreadCount.value;
-      if (cnt > 0) {
-        if (!_pulseController.isAnimating) {
-          _pulseController.repeat(reverse: true);
+    // ใช้ NotificationWatcher เฉพาะฝั่งลูกค้า
+    if (!widget.isAdmin) {
+      _unreadListener = () {
+        final cnt = NotificationWatcher.unreadCount.value;
+        if (cnt > 0) {
+          if (!_pulseController.isAnimating) {
+            _pulseController.repeat(reverse: true);
+          }
+        } else {
+          if (_pulseController.isAnimating) {
+            _pulseController.stop();
+          }
+          _pulseController.reset();
         }
-      } else {
-        if (_pulseController.isAnimating) {
-          _pulseController.stop();
-        }
-        _pulseController.reset();
+      };
+
+      NotificationWatcher.unreadCount.addListener(_unreadListener!);
+
+      if (NotificationWatcher.unreadCount.value > 0) {
+        _pulseController.repeat(reverse: true);
       }
-    };
-
-    NotificationWatcher.unreadCount.addListener(_unreadListener!);
-
-    if (NotificationWatcher.unreadCount.value > 0) {
-      _pulseController.repeat(reverse: true);
     }
   }
 
@@ -81,7 +84,7 @@ class _NotificationsPageState extends State<NotificationsPage>
       case 'pending':
       case 'รอดำเนินการ':
       case 'รอชำระเงิน':
-        return 'Pending';
+        return 'Pending Payment';
       case 'paid':
       case 'ชำระเงินแล้ว':
         return 'Paid';
@@ -110,19 +113,20 @@ class _NotificationsPageState extends State<NotificationsPage>
     const bg = Color(0xFFFDF5F2);
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
+    if (!widget.isAdmin && uid == null) {
       return const Scaffold(
-        backgroundColor: bg,
         body: Center(child: Text('Please sign in')),
       );
     }
 
     return Scaffold(
       backgroundColor: bg,
-      // ไม่มี AppBar ในหน้านี้ ให้หน้าหลักเป็นคนวาง
+      // ไม่มี AppBar ในหน้านี้ ให้หน้าหลักเป็นคนวางหัวเอง
       body: SafeArea(
         top: false,
-        child: _buildUserNotifications(uid),
+        child: widget.isAdmin
+            ? _buildAdminNotifications()
+            : _buildUserNotifications(uid!),
       ),
     );
   }
@@ -245,9 +249,9 @@ class _NotificationsPageState extends State<NotificationsPage>
           itemBuilder: (context, i) {
             final entry = entries[i];
             final sources =
-              List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+                List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
               entry['sources']
-                as List<QueryDocumentSnapshot<Map<String, dynamic>>>,
+                  as List<QueryDocumentSnapshot<Map<String, dynamic>>>,
             );
             final data = Map<String, dynamic>.from(entry['data']);
 
@@ -258,11 +262,11 @@ class _NotificationsPageState extends State<NotificationsPage>
 
             if (orderId.isNotEmpty) {
               if (sources.length >= 2) {
-              title = 'Order placed';
-              message =
-                'Thanks for your purchase! Please wait for payment verification.';
+                title = 'Order placed';
+                message =
+                    'Thanks for your purchase! Please wait for payment verification.';
               } else {
-              final t = (data['title'] ?? '').toString().trim();
+                final t = (data['title'] ?? '').toString().trim();
                 if (t.isEmpty || t.contains('สั่งซื้อ')) {
                   title = 'Order placed';
                 } else {
@@ -287,14 +291,24 @@ class _NotificationsPageState extends State<NotificationsPage>
             final amount = rawAmount is num
                 ? _money.format(rawAmount)
                 : (rawAmount?.toString() ?? '');
-            final status =
-                _statusToEnglish((data['status'] ?? '').toString());
+
+            // ✅ คำนวณ unread จากทุก source
+            final bool anyUnread = sources.any((doc) {
+              final m = doc.data();
+              final read = m['read'] == true;
+              final s =
+                  (m['status'] ?? '').toString().toLowerCase();
+              return !(read || s == 'read');
+            });
+
+            final isUnread = anyUnread;
+            final status = isUnread ? 'Unread' : 'Read';
+
             final ts = data['createdAt'];
             final createdAt =
                 ts is Timestamp ? ts.toDate() : DateTime.now();
             final readableTime = _timeAgo(createdAt);
 
-            final isUnread = status.toLowerCase() != 'read';
             final ink = const Color(0xFF4B3B35);
             final accent = const Color(0xFF8D6E63);
             final chipBg = isUnread
@@ -302,14 +316,17 @@ class _NotificationsPageState extends State<NotificationsPage>
                 : Colors.grey.shade200;
             final chipTextColor =
                 isUnread ? accent : Colors.grey.shade700;
-            final titleColor = isUnread ? ink : ink.withOpacity(0.55);
+            final titleColor =
+                isUnread ? ink : ink.withOpacity(0.55);
             final subColor =
                 isUnread ? ink.withOpacity(0.9) : ink.withOpacity(0.55);
 
             return InkWell(
               onTap: () async {
                 if (orderId.isNotEmpty) {
+                  // 1) เปิดรายละเอียดออเดอร์
                   await _openOrderDetail(orderId);
+                  // 2) แล้วค่อย mark read ให้ทุก doc ใน group นี้
                   await _markAggregatedAsRead(uid, sources);
                 } else {
                   await _markAggregatedAsRead(uid, sources);
@@ -335,6 +352,104 @@ class _NotificationsPageState extends State<NotificationsPage>
                   }
                 },
                 onInfo: orderId.isNotEmpty
+                    ? () async {
+                        await _openOrderDetail(orderId);
+                        await _markAggregatedAsRead(
+                            uid, sources);
+                      }
+                    : null,
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ================= ADMIN =================
+
+  Widget _buildAdminNotifications() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('notifications_admin')
+          .orderBy('createdAt', descending: true)
+          .snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return const Center(child: Text('Error loading data'));
+        }
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final docs = snap.data!.docs;
+        if (docs.isEmpty) return const _EmptyState();
+
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          itemCount: docs.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, i) {
+            final d = docs[i];
+            final data = d.data();
+            final orderId = (data['orderId'] ?? '').toString();
+            final title = (data['title'] ?? 'New order').toString();
+            final body = (data['body'] ?? '').toString();
+            final total = data['total'] ?? data['totalAmount'];
+            final amount = total is num
+                ? _money.format(total)
+                : (total?.toString() ?? '');
+            final ts = data['createdAt'] ?? data['timestamp'];
+            final createdAt =
+                ts is Timestamp ? ts.toDate() : DateTime.now();
+            final readableTime = _timeAgo(createdAt);
+            final isUnread = data['read'] != true;
+
+            final ink = const Color(0xFF4B3B35);
+            final accent = const Color(0xFF8D6E63);
+            final chipBg = isUnread
+                ? const Color(0xFFFFEDE6)
+                : Colors.grey.shade200;
+            final chipTextColor =
+                isUnread ? accent : Colors.grey.shade700;
+            final titleColor =
+                isUnread ? ink : ink.withOpacity(0.55);
+            final subColor =
+                isUnread ? ink.withOpacity(0.9) : ink.withOpacity(0.55);
+
+            return InkWell(
+              onTap: () async {
+                if (orderId.isNotEmpty) {
+                  await _openOrderDetail(orderId);
+                }
+                if (isUnread) {
+                  await d.reference.update({
+                    'read': true,
+                    'status': 'read',
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  });
+                }
+              },
+              child: _notificationCard(
+                title: title,
+                message: body,
+                orderId: orderId.isNotEmpty ? orderId : null,
+                amount: amount,
+                status: isUnread ? 'Unread' : 'Read',
+                readableTime: readableTime,
+                isUnread: isUnread,
+                titleColor: titleColor,
+                subColor: subColor,
+                chipBg: chipBg,
+                chipTextColor: chipTextColor,
+                onDelete: () async {
+                  final confirm =
+                      await _showDeleteConfirmation(context);
+                  if (confirm) {
+                    await d.reference.delete();
+                  }
+                },
+                onInfo: orderId.isNotEmpty
                     ? () async => _openOrderDetail(orderId)
                     : null,
               ),
@@ -345,7 +460,7 @@ class _NotificationsPageState extends State<NotificationsPage>
     );
   }
 
-  // ================= Shared Card UI / Helpers (เหมือนเดิม) =================
+  // ================= Shared Card UI =================
 
   Widget _notificationCard({
     required String title,
@@ -567,15 +682,15 @@ class _NotificationsPageState extends State<NotificationsPage>
     );
   }
 
-  // ================= Helper Actions (USER only) =================
+  // ================= Helper Actions =================
 
   Future<bool> _showDeleteConfirmation(BuildContext context) async {
     return await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text('Confirm Delete'),
-            content: const Text(
-                'Do you want to delete this notification?'),
+            content:
+                const Text('Do you want to delete this notification?'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(false),
@@ -595,22 +710,414 @@ class _NotificationsPageState extends State<NotificationsPage>
   }
 
   Future<void> _openOrderDetail(String orderId) async {
-    // ... (เหมือนของเดิมทั้งหมด) ...
-    // ไม่แก้ path / logic เพื่อนไม่ให้ route พัง
+    // ใช้ bottom sheet จากโค้ดเดิมของนาย (คงไว้)
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('orders')
+          .doc(orderId)
+          .get();
+
+      if (!doc.exists) {
+        if (mounted) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Not found'),
+              content: const Text('Order not found'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        }
+        return;
+      }
+
+      final data = doc.data() ?? {};
+      final items = data['items'] is List
+          ? List.from(data['items'] as List)
+          : <dynamic>[];
+
+      final Set<String> needProductIds = {};
+      for (final it in items) {
+        final itMap =
+            it is Map<String, dynamic> ? it : <String, dynamic>{};
+        final name = (itMap['name'] ??
+                    itMap['title'] ??
+                    itMap['productName'] ??
+                    itMap['product'] ??
+                    itMap['label'] ??
+                    '')
+                .toString();
+        final pricePresent = (itMap['price'] is num) ||
+            (itMap['unitPrice'] is num) ||
+            (itMap['amount'] is num);
+        if (name.isEmpty || !pricePresent) {
+          final pid = (itMap['productId'] ??
+                      itMap['id'] ??
+                      itMap['product_id'] ??
+                      itMap['productIdRef'])
+                  ?.toString() ??
+              '';
+          if (pid.isNotEmpty) {
+            needProductIds.add(pid);
+          }
+        }
+      }
+
+      Map<String, DocumentSnapshot<Map<String, dynamic>>> productCache = {};
+      if (needProductIds.isNotEmpty) {
+        final futures = needProductIds.map((id) async {
+          final pdoc = await FirebaseFirestore.instance
+              .collection('products')
+              .doc(id)
+              .get();
+          return MapEntry(id, pdoc);
+        }).toList();
+        final results = await Future.wait(futures);
+        for (final e in results) {
+          productCache[e.key] = e.value;
+        }
+      }
+
+      if (mounted) {
+        await showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          shape: const RoundedRectangleBorder(
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          builder: (ctx) => _buildOrderDetailSheet(
+            ctx,
+            orderId,
+            data,
+            productCache,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Error'),
+            content: Text('Error: $e'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
   }
+
+  Widget _buildOrderDetailSheet(
+    BuildContext context,
+    String orderId,
+    Map<String, dynamic> data,
+    Map<String, DocumentSnapshot<Map<String, dynamic>>> productCache,
+  ) {
+    final statusRaw = (data['status'] ?? 'pending').toString();
+    final label = _statusToEnglish(statusRaw);
+
+    Color c;
+    switch (label) {
+      case 'Pending Payment':
+        c = Colors.orange.shade700;
+        break;
+      case 'Processing':
+        c = Colors.blue.shade700;
+        break;
+      case 'Paid':
+        c = Colors.green.shade700;
+        break;
+      case 'Shipped':
+        c = Colors.cyan.shade700;
+        break;
+      case 'Completed':
+        c = Colors.teal.shade700;
+        break;
+      case 'Cancelled':
+        c = Colors.red.shade700;
+        break;
+      default:
+        c = Colors.grey.shade700;
+        break;
+    }
+
+    final money = _money;
+    final pricing = data['pricing'] is Map<String, dynamic>
+        ? data['pricing'] as Map<String, dynamic>
+        : <String, dynamic>{};
+    final grand = (pricing['grandTotal'] is num)
+        ? pricing['grandTotal'] as num
+        : num.tryParse('${pricing['grandTotal'] ?? '0'}') ?? 0;
+
+    final items = data['items'] is List
+        ? List.from(data['items'] as List)
+        : <dynamic>[];
+
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.receipt_long,
+                size: 24,
+                color: Color(0xFF8D6E63),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Order #$orderId',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF4B3B35),
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(
+                  Icons.close,
+                  color: Colors.grey,
+                ),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+          const Divider(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: c.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              'Status: $label',
+              style: TextStyle(
+                color: c,
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (items.isNotEmpty)
+            const Text(
+              'Items:',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+          if (items.isNotEmpty)
+            Expanded(
+              child: ListView(
+                shrinkWrap: true,
+                padding:
+                    const EdgeInsets.only(top: 8, bottom: 8),
+                children: items.map((it) {
+                  final itMap = it is Map<String, dynamic>
+                      ? Map<String, dynamic>.from(it)
+                      : <String, dynamic>{};
+                  String name = (itMap['name'] ??
+                          itMap['title'] ??
+                          itMap['productName'] ??
+                          itMap['product'] ??
+                          itMap['label'] ??
+                          '')
+                      .toString();
+
+                  final idCandidate =
+                      (itMap['productId'] ??
+                                  itMap['id'] ??
+                                  itMap['product_id'] ??
+                                  itMap['productIdRef'])
+                              ?.toString() ??
+                          '';
+
+                  final qty = itMap['qty'] ??
+                      itMap['quantity'] ??
+                      itMap['count'] ??
+                      1;
+                  final qtyNum = qty is num
+                      ? qty
+                      : int.tryParse(qty.toString()) ?? 1;
+
+                  num priceNum = 0;
+                  if (itMap['price'] is num) {
+                    priceNum = itMap['price'] as num;
+                  } else if (itMap['unitPrice'] is num) {
+                    priceNum = itMap['unitPrice'] as num;
+                  } else {
+                    priceNum = num.tryParse(
+                          '${itMap['price'] ?? itMap['unitPrice'] ?? itMap['amount'] ?? 0}',
+                        ) ??
+                        0;
+                  }
+
+                  if ((name.isEmpty || priceNum == 0) &&
+                      idCandidate.isNotEmpty) {
+                    final pdoc = productCache[idCandidate];
+                    if (pdoc != null && pdoc.exists) {
+                      final pdata = pdoc.data() ?? {};
+                      if (name.isEmpty) {
+                        name = (pdata['name'] ??
+                                pdata['title'] ??
+                                pdata['label'] ??
+                                '')
+                            .toString();
+                      }
+                      if (priceNum == 0) {
+                        if (pdata['price'] is num) {
+                          priceNum = pdata['price'] as num;
+                        } else if (pdata['unitPrice'] is num) {
+                          priceNum = pdata['unitPrice'] as num;
+                        } else {
+                          priceNum = num.tryParse(
+                                '${pdata['price'] ?? pdata['unitPrice'] ?? 0}',
+                              ) ??
+                              priceNum;
+                        }
+                      }
+                    }
+                  }
+
+                  final subtotal = priceNum * qtyNum;
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Row(
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name.isNotEmpty
+                                    ? name
+                                    : '(No name)',
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              Text(
+                                'Quantity: x$qtyNum',
+                                style: const TextStyle(
+                                  color: Colors.black54,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          '฿${money.format(subtotal)}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          if (items.isNotEmpty) const Divider(),
+          Padding(
+            padding:
+                const EdgeInsets.only(top: 8.0),
+            child: Row(
+              mainAxisAlignment:
+                  MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Grand Total:',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 17,
+                    color: Color(0xFF4B3B35),
+                  ),
+                ),
+                Text(
+                  '฿${money.format(grand)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                    color: Color(0xFF8D6E63),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- Batch helpers (USER only) ----------
 
   Future<void> _markAggregatedAsRead(
     String uid,
     List<QueryDocumentSnapshot<Map<String, dynamic>>> sources,
   ) async {
-    // ... (เหมือนเดิม) ...
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+
+      for (final s in sources) {
+        final data = s.data();
+        final read = data['read'] == true;
+        final status =
+            (data['status'] ?? '').toString().toLowerCase();
+
+        if (!(read || status == 'read')) {
+          batch.update(s.reference, {
+            'read': true,
+            'status': 'read',
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      }
+
+      await batch.commit();
+    } catch (_) {}
   }
 
   Future<void> _deleteAggregated(
     String uid,
     List<QueryDocumentSnapshot<Map<String, dynamic>>> sources,
   ) async {
-    // ... (เหมือนเดิม) ...
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+
+      for (final s in sources) {
+        batch.delete(s.reference);
+      }
+
+      await batch.commit();
+    } catch (_) {}
   }
 }
 

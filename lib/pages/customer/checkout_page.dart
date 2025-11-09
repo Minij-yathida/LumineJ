@@ -375,49 +375,46 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
   // ----------------- Coupon / claimed helpers -----------------
 
-Future<void> _markCouponAsUsed(
-  String uid,
-  String code,
-  String orderId,
-) async {
-  try {
-    final normalizedCode = code.trim().toUpperCase();
-    if (normalizedCode.isEmpty) return;
+    Future<void> _markCouponAsUsed(
+      String uid,
+      String code,
+      String orderId,
+    ) async {
+      try {
+        // ทำโค้ดให้เป็นตัวพิมพ์ใหญ่เหมือนตอนสร้าง claimedCoupons
+        final normalizedCode = code.trim().toUpperCase();
+        if (normalizedCode.isEmpty) return;
 
-    final colRef = _fs
-        .collection('users')
-        .doc(uid)
-        .collection('claimedCoupons');
+        final colRef = _fs
+            .collection('users')
+            .doc(uid)
+            .collection('claimedCoupons');
 
-    // เคสปกติ: doc id = CODE
-    final directRef = colRef.doc(normalizedCode);
-    final directSnap = await directRef.get();
+        // เคสปกติ: doc id = CODE
+        final directRef = colRef.doc(normalizedCode);
+        final directSnap = await directRef.get();
 
-    if (directSnap.exists) {
-      // ถ้าอยากเก็บประวัติใน order แล้วค่อยใช้คูปองใน order แทน claimedCoupons
-      // ก็ไม่ต้องเซ็ต redeemedAt ที่นี่แล้ว ลบได้เลย
-      await directRef.delete();
-      debugPrint('[coupon] deleted $normalizedCode for user $uid (order $orderId)');
-      return;
+        if (directSnap.exists) {
+          await directRef.delete();
+          debugPrint('[coupon] deleted $normalizedCode for user $uid in order $orderId');
+          return;
+        }
+
+        // fallback: เผื่อเคยมี docId ไม่ตรง code แต่มี field code
+        final q = await colRef
+            .where('code', isEqualTo: normalizedCode)
+            .limit(1)
+            .get();
+
+        if (q.docs.isNotEmpty) {
+          await q.docs.first.reference.delete();
+          debugPrint('[coupon] deleted (fallback) $normalizedCode for user $uid in order $orderId');
+        }
+      } catch (e) {
+        debugPrint('Error marking coupon as used (delete mode): $e');
+      }
     }
-
-    // fallback: เผื่อมีเคสเก่าวาง docId สุ่มแต่มี field code
-    final q = await colRef
-        .where('code', isEqualTo: normalizedCode)
-        .limit(1)
-        .get();
-
-    if (q.docs.isNotEmpty) {
-      await q.docs.first.reference.delete();
-      debugPrint('[coupon] deleted (fallback) $normalizedCode for user $uid (order $orderId)');
-    }
-  } catch (e) {
-    debugPrint('Error marking coupon as used (delete mode): $e');
-  }
-}
-
-  // โหลดเอกสารคูปองจาก collection `coupons` ด้วย list ของ code
-  // ✅ รองรับ document-id สุ่ม เพราะ lookup ที่ field "code"
+ // ✅ รองรับ document-id สุ่ม เพราะ lookup ที่ field "code"
   Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
       _getCouponsByCodes(List<String> codes) async {
     if (codes.isEmpty) return [];
@@ -1604,11 +1601,13 @@ Future<void> _markCouponAsUsed(
         pricing:pricingPayload,
         payment:paymentPayload,
       );
-      // ✅ หลังสร้าง order สำเร็จ - mark coupon as used if applicable
+      // ใช้แล้วลบออกไปเลย
       final uid = _auth.currentUser?.uid;
       if (uid != null && _selectedCoupon != null) {
         final code = (_selectedCoupon!['code'] ?? '').toString().toUpperCase();
-        if (code.isNotEmpty && (_productDiscount + _shippingDiscount) > 0) {
+        final discount = _productDiscount + _shippingDiscount;
+
+        if (code.isNotEmpty && discount > 0) {
           await _markCouponAsUsed(uid, code, orderId);
         }
       }
@@ -2418,7 +2417,7 @@ Future<void> _markCouponAsUsed(
       .collection('users')
       .doc(uid)
       .collection('claimedCoupons')
-      .where('redeemedAt', isEqualTo: null) // ✅ เอาเฉพาะที่ยังไม่ใช้
+      .where('redeemedAt', isNull: true)// ✅ เอาเฉพาะที่ยังไม่ใช้
       .snapshots(),
       builder:
           (context, snap) {

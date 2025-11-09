@@ -1,3 +1,4 @@
+// lib/widgets/bottom_nav.dart
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
@@ -11,12 +12,12 @@ class BottomNav extends StatelessWidget implements PreferredSizeWidget {
     Key? key,
     required this.currentIndex,
     required this.onTap,
-    this.isAdmin = false, // 👈 เพิ่ม
+    this.isAdmin = false,
   }) : super(key: key);
 
   final int currentIndex;
   final ValueChanged<int> onTap;
-  final bool isAdmin; // 👈 เพิ่ม
+  final bool isAdmin;
 
   static const double _barHeight = 64.0;
 
@@ -52,7 +53,9 @@ class BottomNav extends StatelessWidget implements PreferredSizeWidget {
                       top: -6,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: AppColors.accent,
                           borderRadius: BorderRadius.circular(12),
@@ -70,8 +73,10 @@ class BottomNav extends StatelessWidget implements PreferredSizeWidget {
                 ],
               ),
               const SizedBox(height: 4),
-              Text(label,
-                  style: TextStyle(fontSize: 12, color: color)),
+              Text(
+                label,
+                style: TextStyle(fontSize: 12, color: color),
+              ),
             ],
           ),
         ),
@@ -81,7 +86,7 @@ class BottomNav extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ถ้าเป็น admin ใช้ AdminNotificationWatcher
+    // ถ้าเป็น admin นับจาก notifications_admin
     final ValueListenable<int> notifSource =
         isAdmin ? AdminNotificationWatcher.unreadCount
                 : NotificationWatcher.unreadCount;
@@ -115,7 +120,7 @@ class BottomNav extends StatelessWidget implements PreferredSizeWidget {
                   onTap: () => onTap(0),
                 ),
 
-                // Coupons (เฉพาะฝั่งลูกค้า; ถ้าเป็น admin จะไม่โชว์ badge ใหม่)
+                // Coupons
                 ValueListenableBuilder<int>(
                   valueListenable: CouponWatcher.newCouponCount,
                   builder: (context, newCoupons, _) => _buildItem(
@@ -123,6 +128,7 @@ class BottomNav extends StatelessWidget implements PreferredSizeWidget {
                     label: 'Coupons',
                     selected: currentIndex == 1,
                     onTap: () => onTap(1),
+                    // admin ไม่ต้องมี badge คูปองใหม่
                     badge: isAdmin ? 0 : newCoupons,
                   ),
                 ),

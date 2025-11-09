@@ -1,4 +1,4 @@
-  rules_version = '2';
+rules_version = '2';
   service cloud.firestore {
     match /databases/{database}/documents {
 
@@ -198,18 +198,23 @@
           || isAdmin() || isAdminViaDoc();
       }
 
-      // ===========================
-      // ADMIN NOTIFICATIONS & ALERTS
-      // ===========================
-      match /admin_notifications/{notifId} {
-        allow create: if signedIn();
-        allow read, update, delete: if isAdmin() || isAdminViaDoc();
-      }
+        // ===========================
+        // ADMIN NOTIFICATIONS & ALERTS
+        // ===========================
+        
+        match /notifications_admin/{notifId} {
+          // create ส่วนใหญ่จะมาจาก Cloud Functions (admin SDK)
+          // จะเขียนหรือไม่เขียน allow create ก็ได้ แต่ใส่ไว้ไม่เสียหาย
+          allow create: if isAdmin() || isAdminViaDoc() || signedIn();
+          // ให้เฉพาะ admin อ่าน/แก้/ลบ
+          allow read, update, delete: if isAdmin() || isAdminViaDoc();
+        }
 
-      match /admin_alerts/{alertId} {
-        allow create: if signedIn();
-        allow read, update, delete: if isAdmin() || isAdminViaDoc();
-      }
+
+        match /admin_alerts/{alertId} {
+          allow create: if signedIn();
+          allow read, update, delete: if isAdmin() || isAdminViaDoc();
+        }
 
       // ===========================
       // PRODUCTS
@@ -412,92 +417,76 @@
         allow read, write: if isAdmin() || isAdminViaDoc();
       }
 
+     
+     // ===========================
       // CHAT
       // ===========================
-      match /threads/{threadId} {
+     match /threads/{threadId} {
+  // ใครล็อกอิน อ่าน thread / query ได้
+  allow read: if signedIn();
 
-        // อนุญาตให้ user ที่ล็อกอิน อ่าน & listen doc thread ใด ๆ ได้
-        // (ใช้สำหรับเปิดห้อง / เช็คมีอยู่ไหม; เนื้อหาจริงของแชทอยู่ใน messages ซึ่งยังล็อกด้วย participants)
-        allow get, list: if signedIn();
+  // ลูกค้าสร้าง thread
+  allow create: if signedIn()
+    && (request.resource.data.participants is list)
+    && (request.auth.uid in request.resource.data.participants);
 
-        // ลูกค้าสร้าง thread ของตัวเองได้
-        allow create: if signedIn()
-          && (request.resource.data.participants is list)
-          && (request.auth.uid in request.resource.data.participants)
-          && request.resource.data.keys().hasAny(['participants'])
-          && (
-            !request.resource.data.keys().hasAny(['lastAt'])
-            || request.resource.data.lastAt is timestamp
-          )
-          && (
-            !request.resource.data.keys().hasAny(['updatedAt'])
-            || request.resource.data.updatedAt is timestamp
-          );
+  // อัปเดต summary/unread/seen
+  allow update: if
+    (isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc())
+    || (
+      signedIn()
+      && uidInThread(threadId, request.auth.uid)
+      && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'lastMessage',
+        'lastSender',
+        'lastAt',
+        'updatedAt',
+        'unread_user',
+        'unread_store',
+        'unread',
+        'lastSeen_user',
+        'lastSeen_store',
+        'typing',
+        'peerMeta'
+      ])
+    );
 
-        // อัปเดต:
-        // - admin / storeOwner ได้เต็ม
-        // - ผู้ใช้ใน thread แก้เฉพาะ field สรุป/unread/seen/typing ได้
-        allow update: if
-          (
-            isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc()
-          )
-          || (
-            signedIn()
-            && uidInThread(threadId, request.auth.uid)
-            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
-              'lastMessage',
-              'lastSender',
-              'lastAt',
-              'updatedAt',
-              'unread_user',
-              'unread_store',
-              'unread',
-              'lastSeen_user',
-              'lastSeen_store',
-              'typing',
-              'peerMeta'
-            ])
-          );
+  allow delete: if isAdmin() || isAdminViaDoc();
 
-        allow delete: if isAdmin() || isAdminViaDoc();
+  // ---------- messages ----------
+  match /messages/{msgId} {
+    // อ่าน
+    allow read, list: if
+      (signedIn() && uidInThread(threadId, request.auth.uid))
+      || isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
 
-        // ---------- messages subcollection ----------
-        match /messages/{msgId} {
+    // ส่งข้อความ (ลูกค้าหรือฝั่งร้านที่อยู่ใน participants)
+    allow create: if
+      (
+        signedIn()
+        && uidInThread(threadId, request.auth.uid)
+        && request.resource.data.senderId == request.auth.uid
+        && (!request.resource.data.keys().hasAny(['createdAt'])
+            || request.resource.data.createdAt is timestamp)
+        && isValidMessage(request.resource.data)
+      )
+      // admin / storeOwner global
+      || isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
 
-          // อ่าน / list messages:
-          // - ต้องเป็นคนใน thread หรือ admin / storeOwner
-          allow list, read: if
-            (signedIn() && uidInThread(threadId, request.auth.uid))
-            || isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
+    // อัปเดตสถานะอ่าน
+    allow update: if
+      isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc()
+      || (
+        signedIn()
+        && uidInThread(threadId, request.auth.uid)
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','readAt'])
+        && request.resource.data.status == 'read'
+        && resource.data.senderId != request.auth.uid
+      );
 
-          // ส่งข้อความ:
-          // - ต้องเป็นคนใน thread + senderId == auth.uid
-          allow create: if (
-              signedIn()
-              && uidInThread(threadId, request.auth.uid)
-              && request.resource.data.senderId == request.auth.uid
-              && (
-                !request.resource.data.keys().hasAny(['createdAt'])
-                || request.resource.data.createdAt is timestamp
-              )
-              && isValidMessage(request.resource.data)
-            )
-            || isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc();
-
-          // อัปเดตสถานะอ่าน
-          allow update: if
-            isAdmin() || isAdminViaDoc() || isStoreOwner() || isStoreOwnerViaDoc()
-            || (
-              signedIn()
-              && uidInThread(threadId, request.auth.uid)
-              && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','readAt'])
-              && request.resource.data.status == 'read'
-              && resource.data.senderId != request.auth.uid
-            );
-
-          allow delete: if isAdmin() || isAdminViaDoc();
-        }
-      }
+    allow delete: if isAdmin() || isAdminViaDoc();
+  }
+}
 
 
 
@@ -529,4 +518,4 @@
           );
       }
     }
-  }
+  
