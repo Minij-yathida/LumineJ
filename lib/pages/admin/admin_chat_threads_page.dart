@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:LumineJewelry/chat/chat_page.dart'; // ตรวจสอบ path
-import 'package:LumineJewelry/services/chat_service.dart'; // ตรวจสอบ path
+
 
 // =====================================================================
 // 🧩 MODEL CLASSES (จาก admin_chat_threads_page.dart)

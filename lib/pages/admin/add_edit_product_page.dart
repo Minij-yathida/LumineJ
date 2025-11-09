@@ -77,7 +77,7 @@ class _AddEditProductPageState extends State<AddEditProductPage>
       if (vars is List) {
         for (final v in vars) {
           if (v is Map) {
-            final mv = Map<String, dynamic>.from(v as Map);
+            final mv = Map<String, dynamic>.from(v);
             final size = (mv['size'] ?? '').toString();
             final stock = (mv['stock'] is num)
                 ? (mv['stock'] as num).toInt()

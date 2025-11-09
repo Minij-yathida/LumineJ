@@ -179,7 +179,7 @@ class Product {
           variants.add(ProductVariant.fromMap(v));
         } else if (v is Map) {
           variants.add(ProductVariant.fromMap(
-              Map<String, dynamic>.from(v as Map)));
+              Map<String, dynamic>.from(v)));
         }
       }
     }
